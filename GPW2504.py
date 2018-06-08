@@ -24,7 +24,7 @@ from ArbEcons2504 import import_data
 
 np.seterr(divide='ignore', invalid='ignore')
 
-def gpw_calculation(crude, destination, assay, ws, ports, total, rate_data, sub_to_ws, df, **refinery_config):
+def gpw_calculation(crude, destination, assay, ws, ports, total, rate_data, sub_to_ws, df, basrah_ws_base, crude_diffs, forties_sulphur, **refinery_config):
 
     def standard_ref(crude, refinery_volume, reformer_capacity, fcc_capacity, coker_capacity, lvn_gasolinepool, kero_gasolinepool):
         

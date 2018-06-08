@@ -11,6 +11,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime as dt
 import time
+from pandas.tseries.offsets import BDay
+
+
     
 def import_data():
     t2 = time.process_time()
@@ -29,6 +32,9 @@ def import_data():
     ports = pd.read_excel(data, 'ports')
     sub_to_ws = pd.read_excel(data, 'sub_to_ws', header = None)
     sub_to_ws = sub_to_ws.set_index([0]).to_dict()
+    
+    """table containing the basrah base worldscale that they fix their freight against"""
+    basrah_ws_base = pd.read_excel(data, 'basrah_ws_base', index_col = 'YEAR')
     
     """Take in the crude prices and codes and convert to a dataframe.
     We need to take the first 2 rows of the prices with no headers as this will give us the cude name and the code ascociated
@@ -49,7 +55,14 @@ def import_data():
     total.sort_index(inplace=True)
     total.fillna(method='ffill', inplace=True)
     total = total[total.index > dt(2015,1,1)]
-
+    
+    """This will help with the date error. Turn the index into a numpy array and then assign the value"""
+    if total.index[-1] - total.index[-2] > pd.Timedelta(days=10):
+        total.index.values[-1] = total.index[-2] + pd.Timedelta(days=1)
+      
+        
+        
+        
 
     """Clean the column hedaers so no white spcaes - use simple list comprehension and set headers equal to cleaned"""
     cleaned_column_headers = [i.strip() for i in total.columns.values]
@@ -58,17 +71,34 @@ def import_data():
     """The below was get rid of the row in the index that hax NaT against it and then expand to daily and fill backwards"""
     crude_diffs = pd.read_excel(trader_assessed, 'Crude Diffs Traders', header = 0)
     crude_diffs = crude_diffs.loc[pd.notnull(crude_diffs.index)]
-    crude_diffs = crude_diffs.resample('D').interpolate().fillna(method='bfill')
-    
-    """Give me the columns with codes against them"""
     crude_diffs = crude_diffs.drop([name for name in crude_diffs.columns if 'Unnamed' in name], axis=1)
+
+   
+    #crude_diffs.index = crude_diffs.index.map(lambda x : x + 1*BDay())
+    crude_diffs = crude_diffs.reindex(total.index).fillna(method='bfill').fillna(method='ffill')
     
     """Slice the crude diffs where the dates in the index are the same as the dates in the total dataframe"""
-    crude_diffs = crude_diffs[crude_diffs.index.isin(total.index)]
+    #crude_diffs = crude_diffs[crude_diffs.index.isin(total.index)]
+    crudes_diff_against_osp = ['Basrah Light','Basrah Heavy','Amna','El Sharara','Zueitina','Mellitah']
+    codes_list = [x for x in crude_diffs.columns if x not in crudes_diff_against_osp]
     
     """Apply the values in crude diffs to the correct codes and dates in the total dataframe"""
-    total.loc[total.index.isin(crude_diffs.index), list(crude_diffs.columns)] = crude_diffs[list(crude_diffs.columns)]
+    total.update(crude_diffs[codes_list])
     
+    
+        
+    
+    """We have to convert the prices that are in absolutes into a diff vs a local index, and if there are, set to zero"""
+    total['AALSM01'].loc[total['AALSM01'] > 30] = total['AALSM01'].loc[total['AALSM01'] > 30] - total['CLc1']
+    #total.loc[total.index.isin(crude_diffs.index), codes_list] = crude_diffs[codes_list]
+    #total[codes_list]
+    
+    #total.update(crude_diffs[codes_list])
+    """ Need this for the sulphur table"""
+    forties_sulphur = pd.read_excel(trader_assessed, 'Forties de-esc', header = [22], parse_cols="H:I").set_index('week ending')
+    forties_sulphur = forties_sulphur.loc[pd.notnull(forties_sulphur.index)]
+    forties_sulphur = forties_sulphur.reindex(total.index).fillna(method='ffill')
+
     """Also need to adjust the cfds to take into account the inter month BFOE spread"""   
     cfd_list = ['PCAKA00','PCAKC00','PCAKE00','PCAKG00','AAGLU00','AAGLV00','AALCZ00','AALDA00']
     temp = total[cfd_list].sub(pd.Series(total['PCAAQ00'] - total['PCAAR00']), axis=0)
@@ -109,18 +139,19 @@ def import_data():
     print("Temp DataFrame created successfully")
     print("import_data() created successfully: Time was {}".format(time.process_time() - t2))
     
-    return assay, ws, ports, total, rate_data, sub_to_ws, df
+    return assay, ws, ports, total, rate_data, sub_to_ws, df, basrah_ws_base, crude_diffs, forties_sulphur
 
-
+#crude = 'Amna'
+#destination = 'Rotterdam'
 #import_data()
-#assay, ws, ports, total, rate_data, sub_to_ws, df = import_data()    
+#assay, ws, ports, total, rate_data, sub_to_ws, df, basrah_ws_base, crude_diffs = import_data()    
      
-def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df): 
-    #crude = 'Azeri'
+def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df, basrah_ws_base, crude_diffs, forties_sulphur): 
+    #crude = 'Basrah Light'
     #destination = 'Rotterdam'
     
-    #crude = 'Azeri'
-    #destination = 'Rotterdam'
+    #crude = 'Amna'
+    #destination = 'Houston'
     
     """create the dataframes for use later"""
     df_freight = pd.DataFrame(index=df.index)
@@ -129,6 +160,7 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
     index_wti = [x.lower().strip() for x in ['WTI F1','WTI CMA','1ST LINE WTI','2D LINE WTI','L.A WTI','FORWARD WTI','WTI']]
     index_dtd = [x.lower().strip() for x in ['DATED BRENT', 'DATED','N.SEA DATED','BTC Dated', 'MED DATED','WAF DATED','CANADA DATED','CANADA BRENT DATED','ANGOLA DATED','    GHANA DATED']]
     index_dub = [x.lower().strip() for x in ['DUBAI','DUBAI M2','OMAN/DUBAI']]
+    crudes_diff_against_osp = ['Basrah Light','Basrah Heavy','Amna','El Sharara','Zueitina','Mellitah']
     
     """Declare the main prices that will be used in order to use shorthand notation"""
     
@@ -137,6 +169,8 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
     dub = total['AAVMR00']
     wtim1 = total['CLc1'] 
     wtim2 = total['CLc2']
+    brentm1 = total['LCOc1']
+    brentm2 = total['LCOc2']
     wti_cma_m1 = total['AAVSN00']
     cfd1 = total['PCAKG00']
     cfd2 = total['AAGLV00']
@@ -146,11 +180,10 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
     cfd6 = total['AAGLV00']
     cfd7 = total['AALCZ00']
     cfd8 = total['AALDA00']
-    wti_br_m1 = total['WTCLc1-LCOc1']
-    wtim1_m2 = total['CLc1-CLc2']
-    brentm1_m2 = total['LCOc1-LCOc2']
+    wti_br_m1 = wtim1 - brentm1
+    wtim1_m2 = wtim1-wtim2
+    brentm1_m2 = brentm1 - brentm2
     efpm2 = total['AAGVX00']
-    brentm2 = total['LCOc2']
     efs2 = total['AAEBS00']
     mars_wti2 = total['AAKTH00']
     dfl_m1 = total['AAEAA00']
@@ -217,9 +250,12 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
                 'HOUSTON':{'Code':'AAIPY00','Index':'WTI'},
                 'SINGAPORE':{'Code':'AAIQD00','Index':'OMAN/DUBAI'}}
             }
-       
+            
+    
+    """Need to handle the one month forward OSP concept, so here, take the dataframe for the exceptions above, condense to monhtly values which wont
+    change the value as same for each day, shift that forward then re-expand"""
     if assay[crude]['Code'] == 'multiple':     
-        diff = total[exceptions[crude][discharge_price_region]['Code']]
+        diff = total[exceptions[crude][discharge_price_region]['Code']].resample('MS').mean().shift(-1, freq='MS').reindex(total.index).fillna(method='ffill')
         crude_vs = exceptions[crude][discharge_price_region]['Index'].lower().strip()
     else:    
         diff = total[assay[crude]['Code']]
@@ -238,35 +274,170 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
             """Vectorising the function amkes it applicable over an array - before had to use pandas which was element wise application - i.e. SLOW"""
             v_calculate_flat_rates = np.vectorize(calculate_flat_rates)
             df_freight['Rate'] = np.apply_along_axis(v_calculate_flat_rates,0,np.array(df.index.year))
-            return df_freight
             
+            
+            
+            if ports[ports['Name'] == destination]['Country'].iat[0] == 'South Korea':
+                flat_rate_table = rate_data.loc[(rate_data['LoadPort'] == 'Ruwais')&
+                      (rate_data['DischargePort'] == 'Singapore')]
+                v_calculate_flat_rates = np.vectorize(calculate_flat_rates)
+                df_freight['Murban_Sing_Flat'] = np.apply_along_axis(v_calculate_flat_rates,0,np.array(df.index.year))
+                
+            return df_freight
+        
+        def calculate_port_costs():
+            """These are for the odd costs, tax rebates, etc"""
+            df_freight['Costs'] = 0
+            
+            # This is the export cost out of Houston
+            if sub_region in (['US GULF (padd 3)']):
+                df_freight['Houston_Load_Costs'] = np.where(df_freight.index > dt(2018,2,28),0.09,0)
+                df_freight['Costs'] += df_freight['Houston_Load_Costs']
+            
+            # Port costs to discharge in Rotterdam               
+            if destination == 'Rotterdam':
+                df_freight['Rott_Discharge_Costs'] = 0.15
+                df_freight['Costs'] += df_freight['Rott_Discharge_Costs']
+            
+            # Port costs to discharge in Houston
+            if destination == 'Houston':
+                df_freight['Hous_Discharge_Costs'] = 0.25
+                df_freight['Costs'] += df_freight['Hous_Discharge_Costs']
+                
+            if assay[crude]['LoadPort'] == 'Basrah':
+                df_freight['Basrah_Costs'] = 0.76
+                df_freight['Costs'] += df_freight['Basrah_Costs']
+                
+            if assay[crude]['LoadPort'] == 'Ras Tanura':
+                df_freight['Saudi_Costs'] = 0.66
+                df_freight['Costs'] += df_freight['Saudi_Costs']
+         
+            return df_freight                
+
+           
+
+
+        def freight_and_quality_exceptions():
+            if crude in ('Forties'):
+                df_freight['Buzzard_Content'] = forties_sulphur['buzzard content']
+                df_freight['Implied_Sulphur'] = df_freight['Buzzard_Content'] * 0.012 + 0.003
+                df_freight['De-Escalator_Threshold'] = np.round(df_freight['Implied_Sulphur'], 3)
+                df_freight['De-Escalator_Counts'] = np.minimum(0, 6-df_freight['Implied_Sulphur']*1000)
+                df_freight['Platts_De_Esc'] = total['AAUXL00']
+                df_freight['Forties_Margin_Impact'] = df_freight['Platts_De_Esc'] * df_freight['De-Escalator_Counts'] * -1
+                df_freight['Costs'] += df_freight['Forties_Margin_Impact']
+            
+            if crude in ('Basrah Light','Basrah Heavy'):
+                """This handles the freight escalation calculation from Iraq - the base is sent by SOMO, and table is in databse / excel wb"""
+                monthly_averages = total['PFAOH00'].asfreq(BDay()).resample('BMS').mean() # resampled so we have the business month start, corrects averaging error if cma
+                func_ma_on_days = lambda x: (monthly_averages.loc[(monthly_averages.index.month == x.month)&(monthly_averages.index.year == x.year)]).iat[0]
+                
+                """Create funcs to handle basrah base and flat rate values, apply over df and calc esclator"""
+                func_ws_base = lambda x: (basrah_ws_base.loc[(basrah_ws_base.index.year == x.year)]['SOMO']).iat[0]
+                func_fr = lambda x: (basrah_ws_base.loc[(basrah_ws_base.index.year == x.year)]['FR']).iat[0]
+                func_bhapi = lambda x: (basrah_ws_base.loc[(basrah_ws_base.index.year == x.year)]['BHAPI']).iat[0]                
+                func_blapi = lambda x: (basrah_ws_base.loc[(basrah_ws_base.index.year == x.year)]['BLAPI']).iat[0]                
+                df_freight['Date'] = df_freight.index
+                df_freight['WS Month Avg'] = df_freight['Date'].apply(func_ma_on_days)
+                df_freight['SOMO Base WS'] = df_freight['Date'].apply(func_ws_base)
+                # We have to apply the corrcetion here after SOMO dropped their base rate earlier this year - assumption
+                # only valid for 2018
+                df_freight['SOMO Base WS'].iloc[(df_freight.index >= dt(2018,4,1))&(df_freight.index <= dt(2018,12,31))] = 25               
+                df_freight['Base_FR_for_esc'] = df_freight['Date'].apply(func_fr)
+                
+                if crude == 'Basrah Light':
+                    df_freight['API Esc'] = df_freight['Date'].apply(func_blapi)
+                else:
+                    df_freight['API Esc'] = df_freight['Date'].apply(func_bhapi)               
+                
+                
+                df_freight['WS for Esc'] = (df_freight['WS Month Avg'] - df_freight['SOMO Base WS']) * df_freight['Base_FR_for_esc'] / 7.3 / 100
+                df_freight.drop(['Date'], axis = 1, inplace=True)
+                #df_freight[['WS for Esc','API Esc']] = df_freight[['WS for Esc','API Esc']].resample('MS').mean().shift(-1, freq='MS').reindex(total.index).fillna(method='ffill')
+
+             # South Korean particulars
+            if ports[ports['Name'] == destination]['Country'].iat[0] == 'South Korea':
+                # Freight rebate on imported crudes
+                df_freight['Murban_Freight_Comp'] = total['PFAOC00'] / 100 * df_freight['Murban_Sing_Flat'] / 7.66 #Murban density conversion
+                df_freight['UKC-Yosu_VLCC'] = total['AASLA00'] * 1000000 / 2000000
+                df_freight['Freight_Rebate'] = np.maximum(df_freight['UKC-Yosu_VLCC'] - df_freight['Murban_Freight_Comp'], 0.6)
+                df_freight['Costs'] -= df_freight['Freight_Rebate']
+                
+                # Tax rebate on crudes out of Europe
+                if ports[ports['Name'] == assay[crude]['LoadPort']]['Region'].iat[0] in (['NW EUROPE','MED']):
+                    df_freight['FTA_Tax_Rebate'] = 0.006 * total['LCOc1']
+                    df_freight['Costs'] -= df_freight['FTA_Tax_Rebate']
+                
+                # Tax rebate on crudes out of the US
+                if ports[ports['Name'] == assay[crude]['LoadPort']]['Region'].iat[0] in (['N AMERICA']):
+                    df_freight['FTA_Tax_Rebate'] = 0.005 * total['CLc1']
+                    df_freight['Costs'] -= df_freight['FTA_Tax_Rebate']
+                
+                # Costs ascociated with lifting CPC based on delays
+                if crude == 'CPC Blend':
+                    df_freight['TS_Delays'] = np.maximum(total['AAWIL00'] + total['AAWIK00'] - 2,0)
+                    df_freight['TS_Demur'] = total['AAPED00']
+                    df_freight['TS_Demur_Costs'] = df_freight['TS_Delays'].mul(df_freight['TS_Demur'])/130
+                    df_freight['Costs'] += df_freight['TS_Demur_Costs']
+                
+                # Costs ascociated with lifting Urals, actually a rebate as giving back port costs that are included in CIF price
+                if crude in (['Urals Nth', 'Urals Med']):
+                    df_freight['Urals_Cif_Rebate'] = 0.11
+                    df_freight['Costs'] -= df_freight['Urals_Discharge_Costs']
+                    
+                if crude == 'Forties':
+                    df_freight['Forties_Mkt_Discount'] = 0.5
+                    df_freight['Costs'] -= df_freight['Forties_Mkt_Discount']
+            else:
+                 pass
+            
+            
+            
+            return df_freight
+        
         def calculate_freight():
 
             """This finds the correct worldscale rate and adjusts if it is lumpsum"""
-            sub_region = ports[ports['Name'] == assay[crude]['LoadPort']]['Subregion']
-            sub_region = sub_region.map(sub_to_ws[1]).to_string(index = False) # NB the index = False is make sure we dont take in the index number given in the output
-            sub_region_2 = ports[ports['Name'] == destination]['Subregion']
-            sub_region_2 = sub_region_2.map(sub_to_ws[1]).to_string(index = False)
             ws_codes = ws[(ws['Origin'] == sub_region)&(ws['Destination'] == sub_region_2)]
-        
+            
+            vessel_size = []
             for i in list(ws_codes['Code']):
+                #i = 'PFAGN10'
                 size = ws_codes[ws_codes['Code'] == i]['Size'].iat[0]
+                vessel_size.append(size)
                 name = ws_codes[ws_codes['Code'] == i]['Name'].iat[0]
                 if ws_codes[ws_codes['Code'] == i]['Terms'].values == 'lumpsum':
                     df_freight[name] = total[ws_codes[ws_codes['Code'] == i]['Code'].values] * 1000000
-                    df_freight[size] = total[ws_codes[ws_codes['Code'] == i]['Code'].values] * 1000000 / (ws_codes[ws_codes['Code'] == i]['Size'].values * 1000)
+                    df_freight[size] = total[ws_codes[ws_codes['Code'] == i]['Code'].values] * 1000000 / (ws_codes[ws_codes['Code'] == i]['bbls'].values * 1000) + df_freight['Costs']
                     df_freight.drop(['Rate'], axis=1)
                 else:
                     df_freight[name] = total[i]
-                    df_freight[size] = total[i] / 100 * df_freight['Rate'] / assay[crude]['Conversion']                    
+                    df_freight[size] = total[i] / 100 * df_freight['Rate'] / assay[crude]['Conversion'] + df_freight['Costs']
+            
+            if 'WS for Esc' in df_freight.columns.values:
+                for i in vessel_size:
+                    df_freight[i] = df_freight[i] - df_freight['WS for Esc'] + df_freight['API Esc']
+                                
             return df_freight
         
+        
         calculate_flat_rate()
+       
+        calculate_port_costs()
+
+        freight_and_quality_exceptions()
+        
         calculate_freight()
+
         return df_freight
 
     def convert_prices():
-        df_prices['diff'] = diff
+        if crude in crudes_diff_against_osp:
+            df_prices['OSP'] = diff
+            df_prices['Diff to OSP'] = crude_diffs[crude]
+            df_prices['diff'] = diff + crude_diffs[crude]
+        else:
+            df_prices['diff'] = diff
         """depending on discharge, choose the appropriate index"""
         def convert_wti():
             df_prices['outright'] = wtim1
@@ -340,14 +511,22 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
                          diff + wti_br_m1 - efpm2 - cfd8)
             
             elif crude_vs in index_dtd:
-                df_prices['cfd3'] = cfd3
-                df_prices['cfd5'] = cfd5
-                if sub_region == sub_region_2:
-                    df_prices['vs_dtd'] = diff
-                elif sub_region == 'WAF':
-                    df_prices['vs_dtd'] = diff + ((cfd3 - cfd5)/14) * days
+                if crude in ('Basrah Light','Basrah Heavy'): 
+                    df_prices['cfd3'] = cfd3
+                    df_prices['cfd4'] = cfd4
+                    df_prices['structure'] = ((cfd3 - cfd4)/7) * 7
+                    df_prices['vs_dtd'] = df_prices['diff'] + df_prices['structure']
                 else:
-                    df_prices['vs_dtd'] = diff + ((cfd3 - cfd5)/14) * days
+                    df_prices['cfd3'] = cfd3
+                    df_prices['cfd5'] = cfd5
+                    if sub_region == sub_region_2:
+                        df_prices['vs_dtd'] = diff
+                    elif sub_region == 'WAF':
+                        df_prices['structure'] = ((cfd3 - cfd5)/14) * days
+                        df_prices['vs_dtd'] = diff + df_prices['structure']
+                    else:
+                        df_prices['structure'] = ((cfd3 - cfd5)/7) * days
+                        df_prices['vs_dtd'] = diff + df_prices['structure']
  
             #elif crude_vs in index_dub:
                 #""" This is because all the eastern crudes heading here have diffs against BWAVE"""
@@ -412,25 +591,23 @@ def arb(crude,destination,assay, ws, ports, total, rate_data, sub_to_ws, df):
     freight_list = [freight for freight in df_freight.columns if 'max' in freight or 'VLCC' in freight]
     
     try:
+        
         for k in freight_list:
             try:
                 name = str(k[:4]) + str('_landed_') + str(price_index)
             except Exception as e: print('name fails') 
-            try:
-                """test to see if nan's present
-                print('this is the price index')
-                print(price_index)
-                print(df_prices)
-                print(df_prices[price_index].isnull().sum().sum())
-                print('this is the freight')
-                print(k)
-                print(df_freight[k].isnull().sum().sum())"""
-                temp[name] = df_prices[price_index].add(df_freight[k])
-            except Exception as e: print('temp fails')    
+            if destination == assay[crude]['LoadPort']:
+                temp[name] = df_prices[price_index]
+            else:
+                try:
+                    temp[name] = df_prices[price_index].add(df_freight[k])
+                except Exception as e: print('temp fails')    
     except Exception as e: print('check')
 
     return temp
-    
+
+
+#temp.resample('W-FRI').mean()
 
 
 
